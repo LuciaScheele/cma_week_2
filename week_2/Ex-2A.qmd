@@ -1,0 +1,228 @@
+---
+title: "Ex. 2A- Scheele"
+author: Course script, with notes by Lucia Scheele
+format: html
+---
+
+# Excersise A
+
+```{r}
+library("readr")
+library("sf")
+
+wildschwein_BE <- read_delim("wildschwein_BE_2056.csv", ",")
+str(wildschwein_BE)
+
+wildschwein_BE <- st_as_sf(wildschwein_BE, coords = c("E", "N"), crs = 2056)
+```
+
+## Task 2: Getting an overview
+
+Calculate the time difference between subsequent rows as described in the demo. You can calculate the time difference using the function difftime_secs() (see below) in combination with lead() (see lead() / lag()). Store the time difference in a new column (e.g. timelag).
+
+```{r}
+difftime_secs <- function(later, now){
+    as.numeric(difftime(later, now, units = "secs"))
+}
+
+View(wildschwein_BE)
+
+wildschwein_BE <- wildschwein_BE |> 
+  group_by(TierID) |> 
+  mutate(timelag = difftime_secs(lead(DatetimeUTC), DatetimeUTC))
+
+# How many individuals and for how long where they tracked? are there gaps?
+wildschwein_BE |> 
+  group_by(TierID) |>
+  summarise(first_sample = min(DatetimeUTC), last_sample = max(DatetimeUTC)) 
+
+wildschwein_BE |> 
+  group_by(TierID) |> 
+  summarise(tracking_duration = max(DatetimeUTC)-min(DatetimeUTC))
+```
+
+There are 3 Individuals. That were tracked between different intervals and lengths of time.
+
+```{r}
+# We can look at the timelag between the fixes = Zeitspanne zwischen den Aufnahmen kennenlernen
+wildschwein_BE |> 
+  group_by(TierID) |> 
+  summarise(
+    min_timelag = min(timelag, na.rm = T),
+    max_timelag = max(timelag, na.rm = T),
+    median = median(timelag, na.rm = T),
+    mean = mean(timelag, na.rm = T)
+  ) 
+
+# Details of extreme timelag case
+which(wildschwein_BE$timelag==60367)
+wildschwein_BE[30257,]
+
+```
+
+Conclusion: There are irregularities in time that passed in between fixes. The timelag ranges from 12 seconds to 16 hours (60367 sec) for ID 016A
+
+### Mutate to year, month and day for groups
+
+To further entangle the tracking periods and to find gaps, we can extract year, month and day data and use them for grouping.
+
+```{r}
+# Extract time details within dataframe: 
+library(lubridate)
+
+wildschwein_BE <- wildschwein_BE |> 
+  mutate( year= year(DatetimeUTC) , month = month(DatetimeUTC), day= day(DatetimeUTC), hour= hour(DatetimeUTC))
+
+wildschwein_BE 
+```
+
+### Were individuals tracked concurrently or sequentially?
+
+It could be, that the Boars were only sequentially tracked in certain hours. It thus makes sense to look at the number of fixes per hour
+
+```{r}
+# NR. of fixes per hour
+Fixes_per_hour <- wildschwein_BE |> st_drop_geometry() |> 
+  group_by(TierID, year, month, day, hour) |> 
+  mutate(fixes_per_hour = n())
+
+View(Fixes_per_hour)
+
+# Lets plot our fixes against the time: 
+library(ggplot2)
+library(cowplot)
+
+# Plotting the Timelag between fixes within a year
+lag_14 <- wildschwein_BE |> 
+  filter(year == 2014) |>
+  ggplot(mapping = aes(DatetimeUTC, timelag, color = TierID)) +
+  geom_point() +
+  facet_wrap(~ TierID, nrow = 1) +  # Arrange plots in a single column
+  labs(x = "2014 Datetime (UTC)", y = "Time Lag")
+
+lag_15 <- wildschwein_BE |> 
+  filter(year == 2015) |>
+  ggplot(mapping = aes(DatetimeUTC, timelag, color = TierID)) +
+  geom_point() +
+  facet_wrap(~ TierID, nrow = 1) +  # Arrange plots in a single column
+  labs(x = "2015 Datetime (UTC)", y = "Time Lag")
+
+plot_grid(lag_14,lag_15, ncol = 1)
+```
+
+```{r}
+# Plotting the FIxes_per_hour between fixes within a year
+
+Plot_14 <- Fixes_per_hour |> 
+  filter(year == 2014) |> 
+  ggplot(mapping = aes(DatetimeUTC, fixes_per_hour, color = TierID)) +
+  geom_point() +
+  facet_wrap(~ TierID, nrow = 1) +  # Arrange plots in a single column
+  labs(x = "Datetime (UTC) - 2014", y = "fixes_per_hour") +
+  scale_y_continuous(breaks = seq(0, 20, by = 1))
+
+Plot_15 <- Fixes_per_hour |> 
+  filter(year == 2015) |> 
+  ggplot(mapping = aes(DatetimeUTC, fixes_per_hour, color = TierID)) +
+  geom_point() +
+  facet_wrap(~ TierID, nrow = 1) +  # Arrange plots in a single column
+  labs(x = "Datetime (UTC) - 2015", y = "fixes_per_hour") +
+  scale_y_continuous(breaks = seq(0, 20, by = 1))
+
+plot_grid(Plot_14,Plot_15, ncol = 1)
+
+```
+
+The table (of fixes per hour) suggests, that the data of at least one individual was concurrently tracked, with a tracking cluster between 17 - 04:00 in the next morning, followed by a tracking rythm of only one fix/ 3 hours from 05:00 to 17 o\`clock.
+
+The plots over a year further show, that the tracking of 002A in 2014 started earlier than the tracking for the other two individuals. Generally, tracking intensity varied with seasons: Only one fix per tracked hour from mid november until Mid February. Then tracking intensity partially went up to 4 fixes per hour. Individual 018 showed most variation of this pattern and had the greates timelags of tracking among all individuals.
+
+### What is the temporal sampling interval between the locations?
+
+```{r}
+st_crs(wildschwein_BE)
+
+wildschwein_BE |> group_by(TierID) |> 
+  ggplot(aes(color= TierID))+
+  geom_sf(alpha= 0.4) + 
+  coord_sf(datum = 2065)
+```
+
+## Task 3: Distance between locations
+
+```{r}
+distance_by_element <- function(later, now){
+  as.numeric(
+    st_distance(later, now, by_element = TRUE)
+  )
+}
+
+wildschwein_BE <- wildschwein_BE |> mutate(
+  steplength = distance_by_element(lag(geometry), geometry)
+) 
+
+View(wildschwein_BE)
+```
+
+## Deriving distance and speed
+
+In this task we will derive some additional movement parameters from our trajectories. So far our trajectories only consist of a list of time-stamped spatial locations. First let’s calculate the Euclidean distance between subsequent locations using the function st_distance() with the option by_element = TRUE. Store these values in a new column with the name steplength. Next, you can calculate the animals’ speed based on steplength and the timelag (from the last task).
+
+```{r}
+wildschwein_BE <- wildschwein_BE |> mutate(
+  euc_distance = as.numeric(st_distance(geometry, lag(geometry), by_element = T))
+)
+
+wildschwein_BE <- wildschwein_BE |> mutate(
+  speed= euc_distance/timelag # speed in m/sec
+) 
+```
+
+## Task 5: Plausibility Check
+
+It’s important to repeatedly visualize our results, to make sure these are plausible. This is much simpler if we just look at a small sample of our dataset. We can use slice() to extract just a couple of rows
+
+```{r}
+# make small sample of data
+wildschwein_BE |> 
+  slice_head()
+
+# using filter and head
+wildschwein_sample <- wildschwein_BE |>
+  filter(TierName == "Sabi") |> 
+  head(100)
+```
+
+Visualize with map and view
+
+```{r}
+library(tmap)
+tmap_mode("view")
+
+tm_shape(wildschwein_sample) + 
+  tm_dots()
+```
+
+The wild boar move continuously through space, but our samples are discrete points. It would be helpful to at least see the sequence of these samples. We can do this by casting our points to lines. However, we first need to dissolve our single points into a MULTIPOINT object, just like we had to do in the first week when we calculated the minimum convex polygon per animal (see Input: Calculate Convex Hull). The option do_union = FALSE is a confusing way to preserve the order of the points, see Nils’ question on GitHub.
+
+In addition, we can set OpenStreetMap to be the default basemap, since it’s available at lower zoom levels.
+
+```{r}
+# single elements to multipoint oject
+wildschwein_sample_line <- 
+  wildschwein_sample |> 
+  group_by(TierID) |> 
+  summarise(do_union = FALSE) |> 
+  st_cast("LINESTRING")
+
+#mapping
+tmap_options(basemaps = "OpenStreetMap")
+
+tm_shape(wildschwein_sample_line) +
+  tm_lines() +
+  tm_shape(wildschwein_sample) + 
+  tm_dots()
+
+
+  
+```
